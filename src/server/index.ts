@@ -20,15 +20,20 @@ export class Chat extends Server<Env> {
     // this is where you can initialize things that need to be done before the server starts
     // for example, load previous messages from a database or a service
 
-    // create the messages table if it doesn't exist
-    this.ctx.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, user TEXT, role TEXT, content TEXT)`,
-    );
+    try {
+      // create the messages table if it doesn't exist
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, user TEXT, role TEXT, content TEXT)`,
+      );
 
-    // load the messages from the database
-    this.messages = this.ctx.storage.sql
-      .exec(`SELECT * FROM messages`)
-      .toArray() as ChatMessage[];
+      // load the messages from the database
+      this.messages = this.ctx.storage.sql
+        .exec(`SELECT * FROM messages`)
+        .toArray() as ChatMessage[];
+    } catch (err) {
+      console.error("onStart: failed to initialize chat storage", err);
+      throw err;
+    }
   }
 
   onConnect(connection: Connection) {
@@ -54,15 +59,25 @@ export class Chat extends Server<Env> {
       this.messages.push(message);
     }
 
-    this.ctx.storage.sql.exec(
-      `INSERT INTO messages (id, user, role, content) VALUES ('${
-        message.id
-      }', '${message.user}', '${message.role}', ${JSON.stringify(
-        message.content,
-      )}) ON CONFLICT (id) DO UPDATE SET content = ${JSON.stringify(
-        message.content,
-      )}`,
-    );
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO messages (id, user, role, content) VALUES ('${
+          message.id
+        }', '${message.user}', '${message.role}', ${JSON.stringify(
+          message.content,
+        )}) ON CONFLICT (id) DO UPDATE SET content = ${JSON.stringify(
+          message.content,
+        )}`,
+      );
+    } catch (err) {
+      console.error("saveMessage: failed to persist message", {
+        messageId: message.id,
+        user: message.user,
+        role: message.role,
+        error: err,
+      });
+      throw err;
+    }
   }
 
   onMessage(connection: Connection, message: WSMessage) {
@@ -70,7 +85,16 @@ export class Chat extends Server<Env> {
     this.broadcast(message);
 
     // let's update our local messages store
-    const parsed = JSON.parse(message as string) as Message;
+    let parsed: Message;
+    try {
+      parsed = JSON.parse(message as string) as Message;
+    } catch (err) {
+      console.error("onMessage: failed to parse incoming WebSocket message", {
+        connectionId: connection.id,
+        error: err,
+      });
+      return;
+    }
     if (parsed.type === "add" || parsed.type === "update") {
       this.saveMessage(parsed);
     }
@@ -79,9 +103,18 @@ export class Chat extends Server<Env> {
 
 export default {
   async fetch(request, env) {
-    return (
-      (await routePartykitRequest(request, { ...env })) ||
-      env.ASSETS.fetch(request)
-    );
+    try {
+      return (
+        (await routePartykitRequest(request, { ...env })) ||
+        env.ASSETS.fetch(request)
+      );
+    } catch (err) {
+      console.error("fetch: unhandled error serving request", {
+        method: request.method,
+        url: request.url,
+        error: err,
+      });
+      return new Response("Internal Server Error", { status: 500 });
+    }
   },
 } satisfies ExportedHandler<Env>;
